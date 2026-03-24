@@ -15,7 +15,7 @@ from threading import Thread
 TOKEN = os.getenv("DISCORD_TOKEN")
 GENIUS_API_KEY = os.getenv("GENIUS_API_KEY")
 
-intents = discord.Intents.default()
+intents = discord.Intents.default()intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------------------
