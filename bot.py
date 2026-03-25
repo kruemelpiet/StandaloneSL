@@ -143,8 +143,6 @@ async def send_songlink_embed(ctx_or_interaction, song_data, is_slash=False):
 
 @bot.command(name="sl")
 async def prefix_songlink(ctx, *, query: str):
-    if ctx.channel.id != ALLOWED_CHANNEL_ID:
-        return  # ignore if wrong channel
 
     # Fetch song data
     song_data = await fetch_song_links(query, ctx)
@@ -163,15 +161,8 @@ async def prefix_songlink(ctx, *, query: str):
 @tree.command(
     name="sl",
     description="Song links + Genius",
-    guild=discord.Object(id=GUILD_ID)
-)
+    
 async def slash_songlink(interaction: discord.Interaction, query: str):
-    if interaction.channel_id != ALLOWED_CHANNEL_ID:
-        await interaction.response.send_message(
-            "Not allowed here.",
-            ephemeral=True
-        )
-        return
 
     # Defer to give time for API calls
     await interaction.response.defer()
