@@ -6,30 +6,24 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from flask import Flask
 import threading
+import requests  # Needed for fetch_song_links
 
 # ---------------------------
 # Load Environment Variables
 # ---------------------------
-
 load_dotenv()
-
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GENIUS_API_KEY = os.getenv("GENIUS_API_KEY")
 
 # ---------------------------
 # Discord Setup
 # ---------------------------
-
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents = discord.Intents.default()  # No message_content needed if only using slash commands
+bot = commands.Bot(command_prefix=None, intents=intents)  # No prefix commands
 tree = bot.tree
 
-
 # ---------------------------
-# Song.link 
+# Song.link helpers
 # ---------------------------
 def clean_song_title(title: str) -> str:
     if not title:
@@ -41,7 +35,7 @@ def clean_song_title(title: str) -> str:
     title = re.sub(r"\s+", " ", title)
     return title.strip()
 
-async def fetch_song_links(query: str, ctx_or_interaction=None, is_slash=False):
+async def fetch_song_links(query: str, interaction=None, is_slash=False):
     try:
         r = requests.get(
             "https://api.song.link/v1-alpha.1/links",
@@ -49,13 +43,10 @@ async def fetch_song_links(query: str, ctx_or_interaction=None, is_slash=False):
             timeout=20
         )
         r.raise_for_status()
-        data = r.json()
-        return data
+        return r.json()
     except Exception as e:
-        if is_slash:
-            await ctx_or_interaction.followup.send(f"Error fetching song data: {e}")
-        else:
-            await ctx_or_interaction.send(f"Error fetching song data: {e}")
+        if is_slash and interaction:
+            await interaction.followup.send(f"Error fetching song data: {e}")
         return None
 
 def get_genius_link(title: str, artist: str):
@@ -74,26 +65,20 @@ def get_genius_link(title: str, artist: str):
         hits = data.get("response", {}).get("hits", [])
         for hit in hits:
             result = hit.get("result", {})
-            result_title = result.get("title", "").lower()
-            result_artist = result.get("primary_artist", {}).get("name", "").lower()
-            if clean_title_str.lower() in result_title and artist.lower() in result_artist:
+            if clean_title_str.lower() in result.get("title", "").lower() and artist.lower() in result.get("primary_artist", {}).get("name", "").lower():
                 return result.get("url")
         return hits[0]["result"].get("url") if hits else None
     except Exception:
         return None
 
-async def send_songlink_embed(ctx_or_interaction, song_data, is_slash=False):
+async def send_songlink_embed(interaction, song_data):
     entity_id = None
     for uid, entity in song_data.get("entitiesByUniqueId", {}).items():
         if entity.get("type") == "song":
             entity_id = uid
             break
     if not entity_id:
-        msg = "Could not parse song data."
-        if is_slash:
-            await ctx_or_interaction.followup.send(msg)
-        else:
-            await ctx_or_interaction.send(msg)
+        await interaction.followup.send("Could not parse song data.")
         return
 
     song = song_data["entitiesByUniqueId"][entity_id]
@@ -131,91 +116,36 @@ async def send_songlink_embed(ctx_or_interaction, song_data, is_slash=False):
         embed.add_field(name="Listen On", value=chunk, inline=False)
         if len(chunks) > 1:
             embed.set_footer(text=f"Page {i+1}/{len(chunks)}")
-        if is_slash:
-            await ctx_or_interaction.followup.send(embed=embed)
-        else:
-            await ctx_or_interaction.send(embed=embed)
-
+        await interaction.followup.send(embed=embed)
 
 # ---------------------------
-# Prefix Commands
+# Slash Commands Only
 # ---------------------------
-@bot.command(name="sl")
-async def prefix_songlink(ctx, *, query: str):
-    print(f"[DEBUG] !sl called with query: {query}")
-
-    # Send a temporary "working" message so the user knows the bot is processing
-    working_msg = await ctx.send("Fetching song data... 🎵")
-
-    # Fetch song data asynchronously
-    song_data = await fetch_song_links_async(query, ctx, is_slash=False)
-    if not song_data:
-        await working_msg.edit(content="Nothing found.")
-        return
-
-    try:
-        # Send embed with Genius link + platforms
-        await send_songlink_embed(ctx, song_data, is_slash=False)
-        await working_msg.delete()  # remove the temporary message
-    except Exception as e:
-        await working_msg.edit(content=f"Error building embed: {e}")
-
-
-# ---------------------------
-# Slash Commands
-# ---------------------------
-
 @tree.command(
     name="sl",
     description="Song links + Genius",
-)    
+)
 async def slash_songlink(interaction: discord.Interaction, query: str):
-
-    # Defer to give time for API calls
     await interaction.response.defer()
-
-    # Fetch song data
     song_data = await fetch_song_links(query, interaction, is_slash=True)
     if not song_data:
         await interaction.followup.send("Nothing found.")
         return
-
-    # Send embed with Genius link + platforms
-    await send_songlink_embed(interaction, song_data, is_slash=True)
-
+    await send_songlink_embed(interaction, song_data)
 
 # ---------------------------
 # Bot Events
 # ---------------------------
-
 @bot.event
 async def on_ready():
-    # Sync slash commands
     await tree.sync()
-    
-    # Print bot info
     print(f"Bot is online as {bot.user}!")
-    print("Commands synced and ready to use.")
+    print("Slash commands synced and ready to use.")
 
-
-@bot.event
-async def on_message(message):
-    # Ignore messages from other bots
-    if message.author.bot:
-        return
-
-    # Debug: print every message
-    print(f"Message received: {message.content}")
-
-    # Process prefix commands
-    await bot.process_commands(message)
-    
 # ---------------------------
 # Keep-Alive Web Server
 # ---------------------------
-
 app = Flask(__name__)
-
 @app.route("/")
 def home():
     return "Bot is alive."
@@ -224,11 +154,9 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# Start Flask in background thread
 threading.Thread(target=run_flask).start()
 
 # ---------------------------
 # Start Bot
 # ---------------------------
-
 bot.run(DISCORD_TOKEN)
