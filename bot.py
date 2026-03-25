@@ -6,7 +6,6 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from flask import Flask
 import threading
-import requests  # Needed for fetch_song_links
 
 # ---------------------------
 # Load Environment Variables
@@ -18,14 +17,16 @@ GENIUS_API_KEY = os.getenv("GENIUS_API_KEY")
 # ---------------------------
 # Discord Setup
 # ---------------------------
-intents = discord.Intents.default()  # No message_content needed if only using slash commands
-bot = commands.Bot(command_prefix=None, intents=intents)  # No prefix commands
+intents = discord.Intents.default()  # No privileged intents needed
+bot = commands.Bot(command_prefix=None, intents=intents)  # Slash commands only
 tree = bot.tree
 
 # ---------------------------
-# Song.link helpers
+# Helper Functions
 # ---------------------------
+
 def clean_song_title(title: str) -> str:
+    """Cleans up a song title for better search results."""
     if not title:
         return ""
     title = re.sub(r"\(feat\.?.*?\)|\[feat\.?.*?\]", "", title, flags=re.IGNORECASE)
@@ -35,33 +36,37 @@ def clean_song_title(title: str) -> str:
     title = re.sub(r"\s+", " ", title)
     return title.strip()
 
+
 async def fetch_song_links(query: str, interaction=None, is_slash=False):
+    """Fetch song.link data asynchronously using aiohttp."""
+    url = "https://api.song.link/v1-alpha.1/links"
+    params = {"url": query, "userCountry": "US"}
+
     try:
-        r = requests.get(
-            "https://api.song.link/v1-alpha.1/links",
-            params={"url": query, "userCountry": "US"},
-            timeout=20
-        )
-        r.raise_for_status()
-        return r.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=20) as resp:
+                resp.raise_for_status()
+                return await resp.json()
     except Exception as e:
         if is_slash and interaction:
             await interaction.followup.send(f"Error fetching song data: {e}")
         return None
 
-def get_genius_link(title: str, artist: str):
+
+async def get_genius_link(title: str, artist: str):
+    """Fetch Genius URL asynchronously for a given song and artist."""
     if not title or not GENIUS_API_KEY:
         return None
     clean_title_str = clean_song_title(title)
     query = f"{clean_title_str} {artist}"
+    url = "https://api.genius.com/search"
+    headers = {"Authorization": f"Bearer {GENIUS_API_KEY}"}
+    params = {"q": query}
+
     try:
-        r = requests.get(
-            "https://api.genius.com/search",
-            params={"q": query},
-            headers={"Authorization": f"Bearer {GENIUS_API_KEY}"},
-            timeout=20
-        )
-        data = r.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, timeout=20) as resp:
+                data = await resp.json()
         hits = data.get("response", {}).get("hits", [])
         for hit in hits:
             result = hit.get("result", {})
@@ -71,7 +76,9 @@ def get_genius_link(title: str, artist: str):
     except Exception:
         return None
 
+
 async def send_songlink_embed(interaction, song_data):
+    """Build and send Discord embed(s) for the song data."""
     entity_id = None
     for uid, entity in song_data.get("entitiesByUniqueId", {}).items():
         if entity.get("type") == "song":
@@ -85,7 +92,8 @@ async def send_songlink_embed(interaction, song_data):
     title = song.get("title", "Unknown Title")
     artist = song.get("artistName", "Unknown Artist")
     thumbnail = song.get("thumbnailUrl") or song.get("artworkUrl")
-    genius_url = get_genius_link(title, artist)
+    genius_url = await get_genius_link(title, artist)
+
     platforms = list(song_data.get("linksByPlatform", {}).items())[:50]
     platform_links = "\n".join(
         f"[{platform.replace('_',' ').title()}]({data['url']})"
@@ -93,7 +101,7 @@ async def send_songlink_embed(interaction, song_data):
         if isinstance(data, dict) and "url" in data
     )
 
-    # Split into 1000-char chunks
+    # Split into 1000-character chunks to avoid Discord limits
     chunks, current_chunk = [], ""
     for line in platform_links.split("\n"):
         if len(current_chunk) + len(line) + 1 > 1000:
@@ -119,11 +127,11 @@ async def send_songlink_embed(interaction, song_data):
         await interaction.followup.send(embed=embed)
 
 # ---------------------------
-# Slash Commands Only
+# Slash Commands
 # ---------------------------
 @tree.command(
     name="sl",
-    description="Song links + Genius",
+    description="Song links + Genius"
 )
 async def slash_songlink(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
@@ -143,9 +151,10 @@ async def on_ready():
     print("Slash commands synced and ready to use.")
 
 # ---------------------------
-# Keep-Alive Web Server
+# Keep-Alive Web Server (Flask)
 # ---------------------------
 app = Flask(__name__)
+
 @app.route("/")
 def home():
     return "Bot is alive."
